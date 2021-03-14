@@ -20,59 +20,23 @@ QuadBoi::MPU6050Ex mpu;
 Servo esc_m1;
 Servo esc_m2;
 
-// uncomment "OUTPUT_READABLE_QUATERNION" if you want to see the actual
-// quaternion components in a [w, x, y, z] format (not best for parsing
-// on a remote host such as Processing or something though)
-//#define OUTPUT_READABLE_QUATERNION
-
-// uncomment "OUTPUT_READABLE_EULER" if you want to see Euler angles
-// (in degrees) calculated from the quaternions coming from the FIFO.
-// Note that Euler angles suffer from gimbal lock (for more info, see
-// http://en.wikipedia.org/wiki/Gimbal_lock)
-//#define OUTPUT_READABLE_EULER
-
-// uncomment "OUTPUT_READABLE_YAWPITCHROLL" if you want to see the yaw/
-// pitch/roll angles (in degrees) calculated from the quaternions coming
-// from the FIFO. Note this also requires gravity vector calculations.
-// Also note that yaw/pitch/roll angles suffer from gimbal lock (for
-// more info, see: http://en.wikipedia.org/wiki/Gimbal_lock)
-#define OUTPUT_READABLE_YAWPITCHROLL
-
-// uncomment "OUTPUT_READABLE_REALACCEL" if you want to see acceleration
-// components with gravity removed. This acceleration reference frame is
-// not compensated for orientation, so +X is always +X according to the
-// sensor, just without the effects of gravity. If you want acceleration
-// compensated for orientation, us OUTPUT_READABLE_WORLDACCEL instead.
-// #define OUTPUT_READABLE_REALACCEL
-
-// uncomment "OUTPUT_READABLE_WORLDACCEL" if you want to see acceleration
-// components with gravity removed and adjusted for the world frame of
-// reference (yaw is relative to initial orientation, since no magnetometer
-// is present in this case). Could be quite handy in some cases.
-//#define OUTPUT_READABLE_WORLDACCEL
-
-
+// macros
 #define INTERRUPT_PIN 2  // use pin 2 on Arduino Uno & most boards
 #define POD_PIN_M1 A1
 #define POD_PIN_M2 A2
 #define ESC_PIN_M1 3
 #define ESC_PIN_M2 4
 
-// MPU control/status vars
-uint8_t fifoBuffer[64]; // FIFO storage buffer
-
-// orientation/motion vars
-Quaternion q;           // [w, x, y, z]         quaternion container
-VectorInt16 aa;         // [x, y, z]            accel sensor measurements
-VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
-VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
-VectorFloat gravity;    // [x, y, z]            gravity vector
-float euler[3];         // [psi, theta, phi]    Euler angle container
-float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+//allowed motor speeds - 0-180 range
+const int MIN_ALLOWED_MOTOR_SPEED = 45; //25% 
+const int MAX_ALLOWED_MOTOR_SPEED = 135; //75% 
+const int MOTOR_SPEED_INCREMENT = 10;
 
 // additional vars
 int potValue_m1;
 int potValue_m2;
+int motorSpeed_m1; //0-180
+int motorSpeed_m2; //0-180
 
 // ================================================================
 // ===                      INITIAL SETUP                       ===
@@ -80,7 +44,6 @@ int potValue_m2;
 
 void setup() 
 {
-
     // join I2C bus (I2Cdev library doesn't do this automatically)
     #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
         Wire.begin();
@@ -101,12 +64,8 @@ void setup()
     // 38400 or slower in these cases, or use some kind of external separate
     // crystal solution for the UART timer.
 
-    // initialize device
-    Serial.println(F("Initializing I2C devices..."));
-    
-    
+    //Initalize mpu
     mpu.initializeEx(INTERRUPT_PIN);
-
 
     // verify connection
     Serial.println(F("Testing device connections..."));
@@ -123,117 +82,107 @@ void setup()
 
     potValue_m1 = 0;
     potValue_m2 = 0;
-    
+
+    //Initialze motors - must start at 0
+    motorSpeed_m1 = 0;
+    motorSpeed_m2 = 0;
+
+    esc_m1.write(motorSpeed_m1);
+    esc_m2.write(motorSpeed_m2);
+    delay(3000);
+    motorSpeed_m1 = motorSpeed_m2 = MIN_ALLOWED_MOTOR_SPEED;
+    esc_m1.write(motorSpeed_m1);
+    esc_m2.write(motorSpeed_m2);
 }
 
+int increaseMotorSpeed(int currentSpeed)
+{
+    //dont let motors go past max speed
+    int newSpeed = (currentSpeed + MOTOR_SPEED_INCREMENT >= MAX_ALLOWED_MOTOR_SPEED) 
+        ? MAX_ALLOWED_MOTOR_SPEED : currentSpeed + MOTOR_SPEED_INCREMENT;
+    return newSpeed;
+}
+
+int decreaseMotorSpeed(int currentSpeed)
+{
+    //dont let motors go below min speed
+    int newSpeed = (currentSpeed - MOTOR_SPEED_INCREMENT <= MIN_ALLOWED_MOTOR_SPEED) 
+        ? MIN_ALLOWED_MOTOR_SPEED : currentSpeed - MOTOR_SPEED_INCREMENT;
+    return newSpeed;
+}
 
 
 // ================================================================
 // ===                    MAIN PROGRAM LOOP                     ===
 // ================================================================
 
-void loop() {
-    // if programming failed, don't try to do anything
-    if (!mpu.dmpReady) return;
-    // read a packet from FIFO
-    if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer)) { // Get the Latest packet 
-        #ifdef OUTPUT_READABLE_QUATERNION
-            // display quaternion values in easy matrix form: w x y z
-            mpu.dmpGetQuaternion(&q, fifoBuffer);
-            Serial.print("quat\t");
-            Serial.print(q.w);
-            Serial.print("\t");
-            Serial.print(q.x);
-            Serial.print("\t");
-            Serial.print(q.y);
-            Serial.print("\t");
-            Serial.println(q.z);
-        #endif
+void loop() 
+{
+    /* 
+    * Gets current dmp packet, processes it, and prints mpu values
+    * depending on which macro is enabled.
+    */
+    mpu.processPacketAndPrint();
 
-        #ifdef OUTPUT_READABLE_EULER
-            // display Euler angles in degrees
-            mpu.dmpGetQuaternion(&q, fifoBuffer);
-            mpu.dmpGetEuler(euler, &q);
-            Serial.print("euler\t");
-            Serial.print(euler[0] * 180/M_PI);
-            Serial.print("\t");
-            Serial.print(euler[1] * 180/M_PI);
-            Serial.print("\t");
-            Serial.println(euler[2] * 180/M_PI);
-        #endif
-
-        #ifdef OUTPUT_READABLE_YAWPITCHROLL
-            // display Euler angles in degrees
-            mpu.dmpGetQuaternion(&q, fifoBuffer);
-            mpu.dmpGetGravity(&gravity, &q);
-            mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-            Serial.print("ypr\t");
-            Serial.print(ypr[0] * 180/M_PI);
-            Serial.print("\t");
-            Serial.print(ypr[1] * 180/M_PI);
-            Serial.print("\t");
-            Serial.println(ypr[2] * 180/M_PI);
-        #endif
-
-        #ifdef OUTPUT_READABLE_REALACCEL
-            // display real acceleration, adjusted to remove gravity
-            mpu.dmpGetQuaternion(&q, fifoBuffer);
-            mpu.dmpGetAccel(&aa, fifoBuffer);
-            mpu.dmpGetGravity(&gravity, &q);
-            mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
-            Serial.print("areal\t");
-            Serial.print(aaReal.x);
-            Serial.print("\t");
-            Serial.print(aaReal.y);
-            Serial.print("\t");
-            Serial.println(aaReal.z);
-        #endif
-
-        #ifdef OUTPUT_READABLE_WORLDACCEL
-            // display initial world-frame acceleration, adjusted to remove gravity
-            // and rotated based on known orientation from quaternion
-            mpu.dmpGetQuaternion(&q, fifoBuffer);
-            mpu.dmpGetAccel(&aa, fifoBuffer);
-            mpu.dmpGetGravity(&gravity, &q);
-            mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
-            mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
-            Serial.print("aworld\t");
-            Serial.print(aaWorld.x);
-            Serial.print("\t");
-            Serial.print(aaWorld.y);
-            Serial.print("\t");
-            Serial.println(aaWorld.z);
-        #endif
-
-        //Motor 1
-        potValue_m1 = analogRead(POD_PIN_M1);   // reads the value of the potentiometer (value between 0 and 1023)
-        potValue_m1 = map(potValue_m1, 0, 1023, 0, 180);   
-        Serial.println("Motor 1 speed:\t");
-        Serial.print(potValue_m1);
-        esc_m1.write(potValue_m1);
-        
-        //Motor 2
-        potValue_m2 = analogRead(POD_PIN_M2);   // reads the value of the potentiometer (value between 0 and 1023)
-        potValue_m2 = map(potValue_m2, 0, 1023, 0, 180);   
-        Serial.println("Motor 2 speed:\t");
-        Serial.print(potValue_m2);
-        esc_m2.write(potValue_m2);
-        
-        /*
-        if(Serial.available() > 0) 
-        {
-            //only works with 1 char, will need a char array for more
-            char incomingData = Serial.read(); // can be -1 if read error
-            int incomingDataInt = atoi(&incomingData);
-            potValue = map(incomingDataInt, 0, 9, 0, 180);  
-        }
-
-            Serial.print("pot\t");
-            Serial.println(potValue);      
-           
-            esc.write(potValue);
-
-*/
-        delay(500);
+    /////////////////////////////////////////////
+    //Control 2 motors via yaw
+    float yaw = mpu.ypr[0] * 180/M_PI;
+    if(yaw >= 0) //rear POV - leaning right - right motor needs to increase speed
+    {            
+        motorSpeed_m1 = decreaseMotorSpeed(motorSpeed_m1);
+        motorSpeed_m2 = increaseMotorSpeed(motorSpeed_m2);
     }
+    else //rear POV - leaning left - left motor needs to increase speed
+    {
+        motorSpeed_m1 = increaseMotorSpeed(motorSpeed_m1);
+        motorSpeed_m2 = decreaseMotorSpeed(motorSpeed_m2);
+    }
+
+    esc_m1.write(motorSpeed_m1);
+    esc_m2.write(motorSpeed_m2);
+    Serial.print("Motor 1 speed:\t");
+    Serial.print(motorSpeed_m1);
+    Serial.print("\t");
+    Serial.print("Motor 2 speed:\t");
+    Serial.println(motorSpeed_m2);
+    /////////////////////////////////////////////
+
+    /*
+    /////////////////////////////////////////////
+    //Control 2 motors via 2 pots
+    //Motor 1
+    potValue_m1 = analogRead(POD_PIN_M1);
+    potValue_m1 = map(potValue_m1, 0, 1023, 0, 180);   
+    esc_m1.write(potValue_m1);
+    Serial.print("Motor 1 speed:\t");
+    Serial.println(potValue_m1);
+            
+    //Motor 2
+    potValue_m2 = analogRead(POD_PIN_M2);
+    potValue_m2 = map(potValue_m2, 0, 1023, 0, 180);
+    esc_m2.write(potValue_m2);   
+    Serial.print("Motor 2 speed:\t");
+    Serial.println(potValue_m2);
+    /////////////////////////////////////////////
+    */
+
+    /*
+    /////////////////////////////////////////////
+    //Control 1 motor via keyboard input
+    if(Serial.available() > 0) 
+    {
+        //only works with 1 char, will need a char array for more
+        char incomingData = Serial.read(); // can be -1 if read error
+        int incomingDataInt = atoi(&incomingData);
+        potValue = map(incomingDataInt, 0, 9, 0, 180);  
+    }
+
+        Serial.print("pot\t");
+        Serial.println(potValue);      
+        
+        esc.write(potValue);
+    /////////////////////////////////////////////
+    */
+
+    delay(500);
 }

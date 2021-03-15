@@ -4,6 +4,15 @@
 #include <Servo.h>
 #include "MPU6050Ex.h"
 
+
+/* Wiring schematic 
+ * ESC 1: white = pin 3, black = ground 
+ * ESC 2: white = pin 5, black = ground 
+ * POT 1: Rear POV left to right - 5v, A1, ground 
+ * POT 2: Rear POV left to right - 5v, A2, ground 
+ * MPU: VCC = 3.3v , GRD = ground, SCL = A5, SDA = A4, INT = pin 2 
+*/
+
 // Arduino Wire library is required if I2Cdev I2CDEV_ARDUINO_WIRE implementation
 // is used in I2Cdev.h
 #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
@@ -25,11 +34,12 @@ Servo esc_m2;
 #define POD_PIN_M1 A1
 #define POD_PIN_M2 A2
 #define ESC_PIN_M1 3
-#define ESC_PIN_M2 4
+#define ESC_PIN_M2 5
+
 
 //allowed motor speeds - 0-180 range
-const int MIN_ALLOWED_MOTOR_SPEED = 45; //25% 
-const int MAX_ALLOWED_MOTOR_SPEED = 135; //75% 
+const int MIN_ALLOWED_MOTOR_SPEED = 65; //45 = 25% 
+const int MAX_ALLOWED_MOTOR_SPEED = 85; //135 = 75% 
 const int MOTOR_SPEED_INCREMENT = 10;
 
 // additional vars
@@ -37,7 +47,8 @@ int potValue_m1;
 int potValue_m2;
 int motorSpeed_m1; //0-180
 int motorSpeed_m2; //0-180
-
+float previousYaw;
+long previousTime;
 // ================================================================
 // ===                      INITIAL SETUP                       ===
 // ================================================================
@@ -80,19 +91,25 @@ void setup()
     esc_m1.attach(ESC_PIN_M1,1000,2000); // (pin, min pulse width, max pulse width in microseconds) 
     esc_m2.attach(ESC_PIN_M2,1000,2000); // (pin, min pulse width, max pulse width in microseconds) 
 
+
     potValue_m1 = 0;
     potValue_m2 = 0;
+    previousYaw = 0;
+    previousTime = millis();
 
     //Initialze motors - must start at 0
     motorSpeed_m1 = 0;
     motorSpeed_m2 = 0;
 
+    Serial.println(F("Calibrating motors."));
     esc_m1.write(motorSpeed_m1);
     esc_m2.write(motorSpeed_m2);
-    delay(3000);
+    delay(5000);
+    Serial.println(F("Motors calibrated. Turning on."));
     motorSpeed_m1 = motorSpeed_m2 = MIN_ALLOWED_MOTOR_SPEED;
     esc_m1.write(motorSpeed_m1);
     esc_m2.write(motorSpeed_m2);
+    delay(3000);
 }
 
 int increaseMotorSpeed(int currentSpeed)
@@ -103,11 +120,27 @@ int increaseMotorSpeed(int currentSpeed)
     return newSpeed;
 }
 
+int increaseMotorSpeed(int currentSpeed, int speedDeviation)
+{
+    //dont let motors go past max speed
+    int newSpeed = (currentSpeed + speedDeviation >= MAX_ALLOWED_MOTOR_SPEED) 
+        ? MAX_ALLOWED_MOTOR_SPEED : currentSpeed + speedDeviation;
+    return newSpeed;
+}
+
 int decreaseMotorSpeed(int currentSpeed)
 {
     //dont let motors go below min speed
     int newSpeed = (currentSpeed - MOTOR_SPEED_INCREMENT <= MIN_ALLOWED_MOTOR_SPEED) 
         ? MIN_ALLOWED_MOTOR_SPEED : currentSpeed - MOTOR_SPEED_INCREMENT;
+    return newSpeed;
+}
+
+int decreaseMotorSpeed(int currentSpeed, int speedDeviation)
+{
+    //dont let motors go below min speed
+    int newSpeed = (currentSpeed - speedDeviation <= MIN_ALLOWED_MOTOR_SPEED) 
+        ? MIN_ALLOWED_MOTOR_SPEED : currentSpeed - speedDeviation;
     return newSpeed;
 }
 
@@ -123,9 +156,74 @@ void loop()
     * depending on which macro is enabled.
     */
     mpu.processPacketAndPrint();
-
+    /*
     /////////////////////////////////////////////
-    //Control 2 motors via yaw
+    //Control 2 motors via yaw - previous yaw usage
+    float yaw = mpu.ypr[2] * 180/M_PI;
+    long currentTime = millis();
+    float yawDiff = (yaw + previousYaw) / (currentTime - previousTime);
+
+    float coefficient = 10;
+    int speedIncrease = 1 * yawDiff * coefficient;
+
+    if(yaw >= 0) //rear POV - leaning right - right motor needs to increase speed
+    {
+        motorSpeed_m1 = decreaseMotorSpeed(motorSpeed_m1);
+        motorSpeed_m2 = increaseMotorSpeed(motorSpeed_m2);
+    }
+    else //rear POV - leaning left - left motor needs to increase speed
+    {
+        motorSpeed_m1 = increaseMotorSpeed(motorSpeed_m1);
+        motorSpeed_m2 = decreaseMotorSpeed(motorSpeed_m2);
+    }
+
+    previousYaw = yaw;
+    previousTime = currentTime;
+
+    esc_m1.write(motorSpeed_m1);
+    esc_m2.write(motorSpeed_m2);
+    Serial.print("Motor 1 speed:\t");
+    Serial.print(motorSpeed_m1);
+    Serial.print("\t");
+    Serial.print("Motor 2 speed:\t");
+    Serial.println(motorSpeed_m2);
+    /////////////////////////////////////////////
+    */
+    
+    
+   /////////////////////////////////////////////
+    //Control 2 motors via yaw - increasing speed by angle
+    float yaw = mpu.ypr[2] * 180/M_PI;
+    if(yaw >= 0) //rear POV - leaning right - right motor needs to increase speed
+    {            
+        motorSpeed_m1 = MIN_ALLOWED_MOTOR_SPEED ;
+        motorSpeed_m2 = map(abs(yaw), 0, 30, MIN_ALLOWED_MOTOR_SPEED, MAX_ALLOWED_MOTOR_SPEED);
+        //motorSpeed_m1 = decreaseMotorSpeed(motorSpeed_m1, abs(yaw));
+        //motorSpeed_m2 = increaseMotorSpeed(motorSpeed_m2, abs(yaw));
+    }
+    else //rear POV - leaning left - left motor needs to increase speed
+    {
+        motorSpeed_m2 = MIN_ALLOWED_MOTOR_SPEED;
+        motorSpeed_m1 = map(abs(yaw), 0, 30, MIN_ALLOWED_MOTOR_SPEED, MAX_ALLOWED_MOTOR_SPEED);
+       // motorSpeed_m1 = increaseMotorSpeed(motorSpeed_m1, abs(yaw));
+        //motorSpeed_m2 = decreaseMotorSpeed(motorSpeed_m2, abs(yaw));
+    }
+
+    esc_m1.write(motorSpeed_m1);
+    esc_m2.write(motorSpeed_m2);
+    Serial.print("Motor 1 speed:\t");
+    Serial.print(motorSpeed_m1);
+    Serial.print("\t");
+    Serial.print("Motor 2 speed:\t");
+    Serial.println(motorSpeed_m2);
+    /////////////////////////////////////////////
+    
+
+
+
+    /*
+    /////////////////////////////////////////////
+    //Control 2 motors via yaw - increasing speed by 10
     float yaw = mpu.ypr[0] * 180/M_PI;
     if(yaw >= 0) //rear POV - leaning right - right motor needs to increase speed
     {            
@@ -146,6 +244,7 @@ void loop()
     Serial.print("Motor 2 speed:\t");
     Serial.println(motorSpeed_m2);
     /////////////////////////////////////////////
+    */
 
     /*
     /////////////////////////////////////////////
@@ -156,7 +255,8 @@ void loop()
     esc_m1.write(potValue_m1);
     Serial.print("Motor 1 speed:\t");
     Serial.println(potValue_m1);
-            
+
+     /       
     //Motor 2
     potValue_m2 = analogRead(POD_PIN_M2);
     potValue_m2 = map(potValue_m2, 0, 1023, 0, 180);
@@ -164,7 +264,7 @@ void loop()
     Serial.print("Motor 2 speed:\t");
     Serial.println(potValue_m2);
     /////////////////////////////////////////////
-    */
+    */    
 
     /*
     /////////////////////////////////////////////
@@ -184,5 +284,5 @@ void loop()
     /////////////////////////////////////////////
     */
 
-    delay(500);
+    delay(100);
 }
